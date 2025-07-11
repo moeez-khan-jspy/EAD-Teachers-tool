@@ -1,0 +1,29 @@
+name: Deploy to Plesk on Interserver
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v3
+        
+      - name: Install Dependencies
+        run: npm install
+        # Step 3: Build the React Project
+      - name: Build React Project
+        run: npm run build
+
+      - name: Deploy to Plesk via FTP
+        uses: SamKirkland/ftp-deploy-action@v4.3.5
+        with:
+          server:  ${{ secrets.FTP_SERVER }}
+          username: ${{ secrets.FTP_USERNAME }}
+          password: ${{ secrets.FTP_PASSWORD }}
+          local-dir: ./build/ # Update if needed (e.g., `./dist` for built files)
+          server-dir: ./ # Path in Plesk server
