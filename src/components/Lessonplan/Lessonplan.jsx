@@ -233,7 +233,7 @@ const LessonPlan = () => {
               id="numberOfClasses"
               type="range"
               min="1"
-              max="50"
+              max="20"
               value={numberOfClasses}
               onChange={(e) => setNumberOfClasses(parseInt(e.target.value, 10))}
               className="form-range"
