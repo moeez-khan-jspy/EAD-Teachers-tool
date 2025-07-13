@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import DownloadModal from "./DownloadModal";
+import jsPDF from "jspdf";
 import * as pdfjsLib from "pdfjs-dist";
 import { getGroqModel } from '../cont_model';
 import { MCQ_PROMPT, SHORT_ANSWER_PROMPT } from './prompts';
@@ -10,6 +12,50 @@ import "./Assessment.css";
 pdfjsLib.GlobalWorkerOptions.workerSrc = `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
 const Assessment = () => {
+  // PDF generation handler
+  const handleDownloadPDF = () => {
+    const doc = new jsPDF();
+    const pageWidth = doc.internal.pageSize.getWidth() - 20; // 10 margin each side
+    let y = 15;
+    doc.setFontSize(18);
+    doc.text('Assessment', 105, y, { align: 'center' });
+    y += 10;
+    doc.setFontSize(12);
+    if (mcqs.length > 0) {
+      doc.setFontSize(16);
+      doc.text('Multiple Choice Questions', 10, y);
+      y += 8;
+      doc.setFontSize(12);
+      mcqs.forEach((mcq, idx) => {
+        const questionLines = doc.splitTextToSize(`${idx + 1}. ${mcq.question}`, pageWidth);
+        doc.text(questionLines, 10, y);
+        y += questionLines.length * 7;
+        mcq.options.forEach((opt, i) => {
+          const optionLines = doc.splitTextToSize(`   ${String.fromCharCode(65 + i)}) ${opt}`, pageWidth - 4);
+          doc.text(optionLines, 14, y);
+          y += optionLines.length * 6;
+        });
+        y += 2;
+        if (y > 270) { doc.addPage(); y = 15; }
+      });
+      y += 4;
+    }
+    if (shortQuestions.length > 0) {
+      doc.setFontSize(16);
+      doc.text('Short Answer Questions', 10, y);
+      y += 8;
+      doc.setFontSize(12);
+      shortQuestions.forEach((q, idx) => {
+        const questionLines = doc.splitTextToSize(`${idx + 1}. ${q.question}`, pageWidth);
+        doc.text(questionLines, 10, y);
+        y += questionLines.length * 9;
+        if (y > 270) { doc.addPage(); y = 15; }
+      });
+    }
+    doc.save('assessment.pdf');
+  };
+
+
   const [inputText, setInputText] = useState("");
   const [pdfFile, setPdfFile] = useState(null);
   const [mcqs, setMcqs] = useState([]);
@@ -229,9 +275,69 @@ const Assessment = () => {
   };
 
   const validateShortAnswer = async (questionId, userAnswer, question) => {
-    // Implement the validation logic here
-    // This function should update the shortAnswerFeedback state
+    setShortAnswerFeedback((prev) => ({
+      ...prev,
+      [questionId]: { loading: true }
+    }));
+    try {
+      const model = getGroqModel();
+      if (!model) {
+        setShortAnswerFeedback((prev) => ({
+          ...prev,
+          [questionId]: { error: "Groq API key not found. Please provide your API key in the settings or header." }
+        }));
+        return;
+      }
+      // Prepare prompt for AI to check answer accuracy
+      const prompt = `Given the following short answer question and a user's answer, provide a remark on accuracy, a score out of 100, and suggestions for improvement.\n\nQuestion: ${question.question}\nCorrect Answer: ${question.answer}\nUser's Answer: ${userAnswer}\n\nReply in JSON format with keys: score (number), feedback (string), keyPointsCovered (array of {point, quality}), keyPointsMissing (array of {point, importance}), misconceptions (array of string), suggestions (array of string).`;
+      const response = await model.call([
+        { role: 'system', content: prompt },
+        { role: 'user', content: 'Evaluate the user answer and provide the JSON as described.' }
+      ]);
+      let parsed = null;
+      if (typeof response.content === 'string') {
+        const jsonMatch = response.content.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          try {
+            parsed = JSON.parse(jsonMatch[0]);
+          } catch (err) {
+            // fallback: try eval
+            try {
+              parsed = eval('(' + jsonMatch[0] + ')');
+            } catch (e) {
+              parsed = null;
+            }
+          }
+        }
+      }
+      if (!parsed) {
+        setShortAnswerFeedback((prev) => ({
+          ...prev,
+          [questionId]: { error: "AI response could not be parsed. Please try again." }
+        }));
+        return;
+      }
+      // Defensive: ensure all keys exist
+      setShortAnswerFeedback((prev) => ({
+        ...prev,
+        [questionId]: {
+          score: parsed.score ?? 0,
+          feedback: parsed.feedback ?? '',
+          keyPointsCovered: parsed.keyPointsCovered ?? [],
+          keyPointsMissing: parsed.keyPointsMissing ?? [],
+          misconceptions: parsed.misconceptions ?? [],
+          suggestions: parsed.suggestions ?? [],
+          error: null
+        }
+      }));
+    } catch (err) {
+      setShortAnswerFeedback((prev) => ({
+        ...prev,
+        [questionId]: { error: "Error validating answer: " + (err.message || err) }
+      }));
+    }
   };
+
 
   const getMcqScore = () => {
     if (!selectedQuestionTypes.includes("mcq") || mcqs.length === 0) return null;
@@ -409,16 +515,21 @@ const Assessment = () => {
                       placeholder="Type your answer here..."
                       rows={4}
                       className="short-answer-input"
+                      disabled={!!shortAnswerFeedback[question.id]?.loading}
                     />
                     <button
                       className="submit-answer-btn"
                       onClick={() => handleShortAnswerSubmit(question)}
-                      disabled={!shortAnswers[question.id]?.trim()}
+                      disabled={!shortAnswers[question.id]?.trim() || !!shortAnswerFeedback[question.id]?.loading}
                     >
-                      Submit Answer
+                      {shortAnswerFeedback[question.id]?.loading ? 'Checking...' : 'Submit Answer'}
                     </button>
                   </div>
-                  {shortAnswerFeedback[question.id] && !shortAnswerFeedback[question.id].error && (
+                  {/* Show feedback if available, or loading indicator */}
+                  {shortAnswerFeedback[question.id]?.loading && (
+                    <div className="short-answer-feedback loading">Checking answer, please wait...</div>
+                  )}
+                  {shortAnswerFeedback[question.id] && !shortAnswerFeedback[question.id].error && !shortAnswerFeedback[question.id].loading && (
                     <div className="short-answer-feedback">
                       <div className="feedback-score">Score: {shortAnswerFeedback[question.id].score}%</div>
                       <div className="feedback-text">{shortAnswerFeedback[question.id].feedback}</div>
@@ -479,27 +590,8 @@ const Assessment = () => {
           </div>
         )}
 
-        {(mcqs.length > 0 || shortQuestions.length > 0) && isAssessmentComplete() && (
-          <div className="score-section">
-            <h2>Your Scores</h2>
-            <div className="score-details">
-              {selectedQuestionTypes.includes("mcq") && mcqs.length > 0 && (
-                <div className="score-item">
-                  <h3>Multiple Choice Questions</h3>
-                  <p className="score">{getMcqScore().toFixed(1)}%</p>
-                </div>
-              )}
-              {selectedQuestionTypes.includes("short") && shortQuestions.length > 0 && (
-                <div className="score-item">
-                  <h3>Short Answer Questions</h3>
-                  <p className="score">{getShortAnswerScore().toFixed(1)}%</p>
-                </div>
-              )}
-              <div className="score-item">
-                <h3>Overall Score</h3>
-                <p className="final-score">{getFinalScore().toFixed(1)}%</p>
-              </div>
-            </div>
+        {(mcqs.length > 0 || shortQuestions.length > 0) && (
+          <div style={{ display: 'flex', flexDirection: 'row', gap: 16, marginBottom: 16 }}>
             <button
               className="generate-btn"
               onClick={() => {
@@ -514,8 +606,17 @@ const Assessment = () => {
             >
               Try Again
             </button>
+            <button
+              className="generate-btn"
+              style={{ marginLeft: 16 }}
+              onClick={handleDownloadPDF}
+            >
+              Download Assessment
+            </button>
           </div>
         )}
+
+
       </div>
     </div>
   );
